@@ -27,6 +27,8 @@ const minHzEl = /** @type {HTMLInputElement} */ ($("minHz"));
 const minHzVal = $("minHzVal");
 const maxHzEl = /** @type {HTMLInputElement} */ ($("maxHz"));
 const maxHzVal = $("maxHzVal");
+const silenceEl = /** @type {HTMLInputElement} */ ($("silence"));
+const silenceVal = $("silenceVal");
 const loudnessEl = /** @type {HTMLInputElement} */ ($("loudness"));
 const loudnessVal = $("loudnessVal");
 const smoothEl = /** @type {HTMLInputElement} */ ($("smooth"));
@@ -60,6 +62,10 @@ maxHzEl.addEventListener("input", () => {
   maxHzVal.textContent = String(Number(maxHzEl.value) | 0);
   pushAudioConfig();
 });
+silenceEl.addEventListener("input", () => {
+  silenceVal.textContent = Number(silenceEl.value).toFixed(3);
+  pushAudioConfig();
+});
 loudnessEl.addEventListener("input", () => {
   loudnessVal.textContent = Number(loudnessEl.value).toFixed(2);
 });
@@ -72,6 +78,7 @@ floorVal.textContent = Number(floorEl.value).toFixed(3);
 colsPerSecVal.textContent = String(Number(colsPerSecEl.value) | 0);
 minHzVal.textContent = String(Number(minHzEl.value) | 0);
 maxHzVal.textContent = String(Number(maxHzEl.value) | 0);
+silenceVal.textContent = Number(silenceEl.value).toFixed(3);
 loudnessVal.textContent = Number(loudnessEl.value).toFixed(2);
 smoothVal.textContent = Number(smoothEl.value).toFixed(2);
 
@@ -131,6 +138,7 @@ function pushAudioConfig() {
   const cps = Number(colsPerSecEl.value) | 0;
   const hop = Math.max(64, Math.min(fftSize >> 1, Math.round(audioCtx.sampleRate / Math.max(1, cps))));
   const { min, max } = clampRange(Number(minHzEl.value), Number(maxHzEl.value));
+  const silence = Math.max(0, Number(silenceEl.value));
 
   // Keep UI consistent if user drags sliders past each other.
   if (min !== Number(minHzEl.value)) minHzEl.value = String(min);
@@ -138,8 +146,8 @@ function pushAudioConfig() {
   minHzVal.textContent = String(min | 0);
   maxHzVal.textContent = String(max | 0);
 
-  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max });
-  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz)`);
+  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max, silence });
+  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz, silence=${silence.toFixed(3)})`);
 }
 
 async function startCamera() {
@@ -320,9 +328,13 @@ function loop(ts) {
     if (col) {
       renderMotiongram(col);
       if (synthPort) {
+        let sum = 0;
+        for (let i = 0; i < col.length; i++) sum += col[i];
+        const level = sum / col.length;
         synthPort.postMessage({
           type: "motionColumn",
           column: Array.from(col),
+          level,
           loudness: Number(loudnessEl.value),
         });
       }
@@ -400,6 +412,8 @@ async function startAudio() {
       this.ringR = 0;
       this.minHz = 80;
       this.maxHz = 2000;
+      this.silence = 0.02;
+      this.motionEnv = 0;
 
       this.pendingCols = [];
       this.loudness = 0.6;
@@ -419,10 +433,11 @@ async function startAudio() {
           }
           if (typeof m.minHz === "number") this.minHz = Math.max(0, m.minHz);
           if (typeof m.maxHz === "number") this.maxHz = Math.max(this.minHz + 1, m.maxHz);
+          if (typeof m.silence === "number") this.silence = Math.max(0, m.silence);
         } else if (m.type === "motionColumn") {
           this.loudness = typeof m.loudness === "number" ? m.loudness : this.loudness;
           // Column arrives as normal Array.
-          this.pendingCols.push(m.column);
+          this.pendingCols.push({ col: m.column, level: m.level || 0 });
         }
       };
     }
@@ -470,7 +485,7 @@ async function startAudio() {
       }
     }
 
-    _colToFrame(col) {
+    _colToFrame(col, motionLevel) {
       // Build a real time-domain frame by creating a conjugate-symmetric spectrum.
       // Use motion column as magnitudes; random phase for each bin.
       this._ensureWindow();
@@ -530,8 +545,11 @@ async function startAudio() {
         frame[i] = re[i] * invN * this.win[i];
       }
 
+      // Silence when not moving: a smooth gate on overall motion level.
+      const thr = this.silence;
+      const gate = motionLevel <= thr ? 0 : Math.min(1, (motionLevel - thr) / Math.max(1e-6, (1 - thr)));
       // Motion-driven gain (avoid silence / clipping).
-      const g = Math.min(1.0, this.loudness * (0.7 + 2.6 * energy / (N >> 1)));
+      const g = Math.min(1.0, this.loudness * gate * (0.7 + 2.6 * energy / (N >> 1)));
       for (let i = 0; i < N; i++) frame[i] *= g;
       return frame;
     }
@@ -543,14 +561,31 @@ async function startAudio() {
       if (buffered >= target) return;
 
       while (((this.ringW - this.ringR + this.ring.length) % this.ring.length) < target) {
-        const col = this.pendingCols.length ? this.pendingCols.shift() : this.lastMotion;
-        if (!col) {
+        const item = this.pendingCols.length ? this.pendingCols.shift() : null;
+        if (!item) {
           // No motion yet.
           this._writeRing(new Float32Array(this.hop));
           continue;
         }
-        this.lastMotion = col;
-        const frame = this._colToFrame(col);
+
+        const col = item.col;
+        const level = item.level;
+
+        // Envelope so silence fades smoothly (prevents clicks).
+        // Release ~150ms, attack ~20ms (in hop units).
+        const attack = Math.exp(-this.hop / (sampleRate * 0.02));
+        const release = Math.exp(-this.hop / (sampleRate * 0.15));
+        const targetEnv = level <= this.silence ? 0 : 1;
+        const coeff = targetEnv > this.motionEnv ? attack : release;
+        this.motionEnv = targetEnv + (this.motionEnv - targetEnv) * coeff;
+
+        // If we’re basically silent, don’t keep generating from old motion.
+        if (this.motionEnv < 1e-3) {
+          this._writeRing(new Float32Array(this.hop));
+          continue;
+        }
+
+        const frame = this._colToFrame(col, level);
 
         // Overlap-add: we write hop samples, but need to add tail overlaps.
         // We'll keep a small overlap buffer inside the ring by writing full hop
@@ -612,12 +647,15 @@ async function startAudio() {
   const cps = Number(colsPerSecEl.value) | 0;
   const hop = Math.max(64, Math.min(fftSize >> 1, Math.round(audioCtx.sampleRate / Math.max(1, cps))));
   const { min, max } = clampRange(Number(minHzEl.value), Number(maxHzEl.value));
-  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max });
+  const silence = Math.max(0, Number(silenceEl.value));
+  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max, silence });
 
   startAudioBtn.disabled = true;
   stopAudioBtn.disabled = false;
 
-  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz)`);
+  setAudioStatus(
+    `audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz, silence=${silence.toFixed(3)})`,
+  );
 }
 
 async function stopAudio() {
