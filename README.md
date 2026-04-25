@@ -27,12 +27,15 @@ Then open:
 
 ## Controls (UI)
 
-- **Start camera / Stop**: begins/stops webcam capture.
-- **Start audio / Stop audio**: starts/stops audio synthesis (Web Audio).
+- **Camera: On/Off**: begins/stops webcam capture.
+- **Audio: On/Off**: starts/stops audio synthesis (Web Audio). (Enabled after camera starts.)
 - **Frame diff gain**: multiplies the frame-difference signal (higher = more sensitive motion detection).
+- **Mirror video**: mirrors both the preview and the analysis input (selfie-style).
 - **Motion floor (noise gate)**: values below this are set to 0 (helps suppress sensor noise / flicker).
 - **FFT size**: audio synthesis iFFT size \(N\). Larger = more spectral detail, more CPU/latency.
 - **Columns per second (analysis rate)**: how often motion vectors are computed and sent to the audio engine.
+- **Min frequency / Max frequency**: limits the audio synthesis to a band (helps reduce harsh high frequencies).
+- **Silence threshold**: output is quiet when motion is below this threshold.
 - **Motion → loudness**: overall output level (motion energy also affects gain).
 - **Smoothing (motiongram)**: exponential smoothing of motion values (higher = calmer/less “buzzy”).
 
@@ -40,8 +43,10 @@ Then open:
 
 - Reads webcam video
 - Computes frame-to-frame difference
-- Builds a **motiongram** by averaging the difference over columns (one value per y-row)
+- Builds a **motiongram (Y)** by averaging the difference over columns (one value per y-row)
+- Builds a **motiongram (X)** by averaging the difference over rows (one value per x-column) for stereo panning
 - Maps each motion vector to an audio spectrum and runs an **inverse FFT** to synthesize sound
+- Uses horizontal motion balance to pan sound **left↔right**
 
 ## How the sound mapping works
 
@@ -55,6 +60,11 @@ For each motion vector:
 This is intentionally “simple sonification” (fast, stable, and easy to modify). If you want a more
 direct mapping (e.g. fixed phase, frequency scaling in Hz, or mapping image x/y differently), open an
 issue or tell me what sound you want.
+
+## Documentation
+
+- General usage is in this README.
+- More technical notes live in the GitHub wiki (see `../webvideosonifyer.wiki` if you have it checked out locally).
 
 ## Troubleshooting
 
