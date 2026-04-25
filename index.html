@@ -184,15 +184,13 @@
         <div class="panel">
           <div class="row">
             <div class="btns">
-              <button id="startCam">Start camera</button>
-              <button id="stopCam" class="secondary" disabled>Stop</button>
+              <button id="toggleCam" aria-pressed="false">Camera: Off</button>
             </div>
           </div>
 
           <div class="row">
             <div class="btns">
-              <button id="startAudio" disabled>Start audio</button>
-              <button id="stopAudio" class="secondary" disabled>Stop audio</button>
+              <button id="toggleAudio" class="secondary" aria-pressed="false" disabled>Audio: Off</button>
             </div>
           </div>
 
@@ -202,6 +200,14 @@
               <input id="diffGain" type="range" min="0" max="8" value="2" step="0.05" />
             </label>
             <div class="mono" id="diffGainVal">2.00</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Mirror video</span>
+              <input id="mirror" type="checkbox" checked />
+            </label>
+            <div class="mono" id="mirrorVal">On</div>
           </div>
 
           <div class="row">

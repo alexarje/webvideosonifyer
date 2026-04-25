@@ -11,13 +11,13 @@ const motionCtx = /** @type {CanvasRenderingContext2D} */ (
 const statusEl = $("status");
 const audioStatusEl = $("audioStatus");
 
-const startCamBtn = /** @type {HTMLButtonElement} */ ($("startCam"));
-const stopCamBtn = /** @type {HTMLButtonElement} */ ($("stopCam"));
-const startAudioBtn = /** @type {HTMLButtonElement} */ ($("startAudio"));
-const stopAudioBtn = /** @type {HTMLButtonElement} */ ($("stopAudio"));
+const toggleCamBtn = /** @type {HTMLButtonElement} */ ($("toggleCam"));
+const toggleAudioBtn = /** @type {HTMLButtonElement} */ ($("toggleAudio"));
 
 const diffGainEl = /** @type {HTMLInputElement} */ ($("diffGain"));
 const diffGainVal = $("diffGainVal");
+const mirrorEl = /** @type {HTMLInputElement} */ ($("mirror"));
+const mirrorVal = $("mirrorVal");
 const floorEl = /** @type {HTMLInputElement} */ ($("floor"));
 const floorVal = $("floorVal");
 const fftSizeEl = /** @type {HTMLInputElement} */ ($("fftSize"));
@@ -41,12 +41,21 @@ function setAudioStatus(msg) {
   audioStatusEl.textContent = msg;
 }
 
+function setToggle(btn, on, onLabel, offLabel, { secondaryOff = false } = {}) {
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? onLabel : offLabel;
+  if (secondaryOff) btn.classList.toggle("secondary", !on);
+}
+
 function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
 diffGainEl.addEventListener("input", () => {
   diffGainVal.textContent = Number(diffGainEl.value).toFixed(2);
+});
+mirrorEl.addEventListener("input", () => {
+  mirrorVal.textContent = mirrorEl.checked ? "On" : "Off";
 });
 floorEl.addEventListener("input", () => {
   floorVal.textContent = Number(floorEl.value).toFixed(3);
@@ -74,6 +83,7 @@ smoothEl.addEventListener("input", () => {
 });
 
 diffGainVal.textContent = Number(diffGainEl.value).toFixed(2);
+mirrorVal.textContent = mirrorEl.checked ? "On" : "Off";
 floorVal.textContent = Number(floorEl.value).toFixed(3);
 colsPerSecVal.textContent = String(Number(colsPerSecEl.value) | 0);
 minHzVal.textContent = String(Number(minHzEl.value) | 0);
@@ -179,9 +189,8 @@ async function startCamera() {
   motionCtx.fillStyle = "#07080c";
   motionCtx.fillRect(0, 0, motionCanvas.width, motionCanvas.height);
 
-  startCamBtn.disabled = true;
-  stopCamBtn.disabled = false;
-  startAudioBtn.disabled = false;
+  setToggle(toggleCamBtn, true, "Camera: On", "Camera: Off");
+  toggleAudioBtn.disabled = false;
 
   setStatus("running");
   rafId = requestAnimationFrame(loop);
@@ -198,9 +207,8 @@ function stopCamera() {
   prevRGBA = null;
   smoothMotion = null;
 
-  startCamBtn.disabled = false;
-  stopCamBtn.disabled = true;
-  startAudioBtn.disabled = true;
+  setToggle(toggleCamBtn, false, "Camera: On", "Camera: Off");
+  toggleAudioBtn.disabled = true;
 
   setStatus("stopped");
 }
@@ -217,12 +225,24 @@ function drawView() {
   const dy = (ch - dh) / 2;
 
   viewCtx.imageSmoothingEnabled = true;
+  viewCtx.save();
+  if (mirrorEl.checked) {
+    viewCtx.translate(cw, 0);
+    viewCtx.scale(-1, 1);
+  }
   viewCtx.drawImage(videoEl, dx, dy, dw, dh);
+  viewCtx.restore();
 }
 
 function computeMotionColumn() {
   // Draw downscaled frame.
+  procCtx.save();
+  if (mirrorEl.checked) {
+    procCtx.translate(PROC_W, 0);
+    procCtx.scale(-1, 1);
+  }
   procCtx.drawImage(videoEl, 0, 0, PROC_W, PROC_H);
+  procCtx.restore();
   const img = procCtx.getImageData(0, 0, PROC_W, PROC_H);
   const rgba = img.data;
 
@@ -527,7 +547,8 @@ async function startAudio() {
       for (let k = 1; k < (N >> 1); k++) {
         if (k < kMin || k > kMax) continue;
         const t = (k - kMin) / Math.max(1, (kMax - kMin));
-        const idx = Math.min(colLen - 1, Math.max(0, Math.round(t * (colLen - 1))));
+        // Flip mapping so low frequencies correspond to the bottom of the display (larger row index).
+        const idx = Math.min(colLen - 1, Math.max(0, Math.round((1 - t) * (colLen - 1))));
         let mag = col[idx];
         if (mag < 0) mag = 0;
         // Slight tilt: emphasize lower bins so it’s more audible.
@@ -660,8 +681,7 @@ async function startAudio() {
   const silence = Math.max(0, Number(silenceEl.value));
   synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max, silence });
 
-  startAudioBtn.disabled = true;
-  stopAudioBtn.disabled = false;
+  setToggle(toggleAudioBtn, true, "Audio: On", "Audio: Off", { secondaryOff: true });
 
   setAudioStatus(
     `audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz, silence=${silence.toFixed(3)})`,
@@ -680,15 +700,27 @@ async function stopAudio() {
   } finally {
     audioCtx = null;
   }
-  startAudioBtn.disabled = !stream;
-  stopAudioBtn.disabled = true;
+  setToggle(toggleAudioBtn, false, "Audio: On", "Audio: Off", { secondaryOff: true });
+  toggleAudioBtn.disabled = !stream;
   setAudioStatus("audio: stopped");
 }
 
-startCamBtn.addEventListener("click", () => startCamera());
-stopCamBtn.addEventListener("click", () => stopCamera());
-startAudioBtn.addEventListener("click", () => startAudio());
-stopAudioBtn.addEventListener("click", () => stopAudio());
+toggleCamBtn.addEventListener("click", async () => {
+  if (stream) {
+    await stopAudio();
+    stopCamera();
+  } else {
+    await startCamera();
+  }
+});
+
+toggleAudioBtn.addEventListener("click", async () => {
+  if (audioCtx) {
+    await stopAudio();
+  } else {
+    await startAudio();
+  }
+});
 
 // Stop audio if camera stops.
 window.addEventListener("beforeunload", () => {
@@ -699,4 +731,7 @@ window.addEventListener("beforeunload", () => {
 // Initial UI.
 setStatus("idle");
 setAudioStatus("audio: stopped");
+setToggle(toggleCamBtn, false, "Camera: On", "Camera: Off");
+setToggle(toggleAudioBtn, false, "Audio: On", "Audio: Off", { secondaryOff: true });
+toggleAudioBtn.disabled = true;
 
