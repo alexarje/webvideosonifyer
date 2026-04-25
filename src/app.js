@@ -183,20 +183,22 @@ function computeMotionColumn() {
 
   if (!prevRGBA) {
     prevRGBA = new Uint8ClampedArray(rgba);
-    smoothMotion = new Float32Array(PROC_W);
+    // One motion value per row (full frame height).
+    smoothMotion = new Float32Array(PROC_H);
     return null;
   }
 
   /** @type {Float32Array} */
-  const col = new Float32Array(PROC_W);
+  const col = new Float32Array(PROC_H);
   const gain = Number(diffGainEl.value);
   const gate = Number(floorEl.value);
   const smooth = Number(smoothEl.value);
 
-  // Average abs-diff over rows for each x.
+  // Average abs-diff over columns for each y (captures full height).
   // Use luma-like weights for perceptual stability.
   for (let y = 0; y < PROC_H; y++) {
     let i = (y * PROC_W) << 2;
+    let acc = 0;
     for (let x = 0; x < PROC_W; x++, i += 4) {
       const r = rgba[i];
       const g = rgba[i + 1];
@@ -210,22 +212,23 @@ function computeMotionColumn() {
       const db = b - pb;
       // luma-weighted abs diff, normalized to [0..1] roughly.
       const d = (Math.abs(dr) * 0.2126 + Math.abs(dg) * 0.7152 + Math.abs(db) * 0.0722) / 255;
-      col[x] += d;
+      acc += d;
     }
+    col[y] = acc;
   }
 
-  const invH = 1 / PROC_H;
-  for (let x = 0; x < PROC_W; x++) {
-    let v = col[x] * invH * gain;
+  const invW = 1 / PROC_W;
+  for (let y = 0; y < PROC_H; y++) {
+    let v = col[y] * invW * gain;
     v = v < gate ? 0 : v;
     v = clamp01(v);
-    col[x] = v;
+    col[y] = v;
   }
 
   // Exponential smoothing in motion domain for calmer audio.
-  if (!smoothMotion) smoothMotion = new Float32Array(PROC_W);
-  for (let x = 0; x < PROC_W; x++) {
-    smoothMotion[x] = smoothMotion[x] * smooth + col[x] * (1 - smooth);
+  if (!smoothMotion) smoothMotion = new Float32Array(PROC_H);
+  for (let y = 0; y < PROC_H; y++) {
+    smoothMotion[y] = smoothMotion[y] * smooth + col[y] * (1 - smooth);
   }
 
   prevRGBA.set(rgba);
@@ -245,10 +248,10 @@ function renderMotiongram(col) {
   const img = motionCtx.createImageData(1, h);
   const data = img.data;
 
-  // Map PROC_W bins -> h pixels vertically (low bins at bottom).
+  // Map row-motion values -> h pixels vertically (top=top of frame).
   for (let y = 0; y < h; y++) {
     const t = y / (h - 1);
-    const bin = Math.min(PROC_W - 1, Math.max(0, Math.round((1 - t) * (PROC_W - 1))));
+    const bin = Math.min(col.length - 1, Math.max(0, Math.round(t * (col.length - 1))));
     const v = col[bin]; // 0..1
 
     // Nice colormap-ish: deep purple -> blue -> white.
@@ -360,7 +363,7 @@ async function startAudio() {
       this.ringR = 0;
 
       this.pendingCols = [];
-      this.loudness = 0.35;
+      this.loudness = 0.6;
       this.lastMotion = null;
       this.seed = 1;
 
@@ -434,7 +437,6 @@ async function startAudio() {
       const re = new Float32Array(N);
       const im = new Float32Array(N);
 
-      const bins = (N >> 1) + 1;
       const colLen = col.length;
       let energy = 0;
 
@@ -451,7 +453,9 @@ async function startAudio() {
         let mag = col[idx];
         if (mag < 0) mag = 0;
         // Slight tilt: emphasize lower bins so it’s more audible.
-        mag = mag * (1.2 - 0.9 * t);
+        mag = mag * (1.25 - 0.95 * t);
+        // Global boost so typical motion produces audible output.
+        mag *= 8.0;
         const ph = this._rand() * TAU;
         const r = mag * Math.cos(ph);
         const ii = mag * Math.sin(ph);
@@ -472,7 +476,7 @@ async function startAudio() {
       }
 
       // Motion-driven gain (avoid silence / clipping).
-      const g = Math.min(1.0, this.loudness * (0.6 + 2.2 * energy / (N >> 1)));
+      const g = Math.min(1.0, this.loudness * (0.7 + 2.6 * energy / (N >> 1)));
       for (let i = 0; i < N; i++) frame[i] *= g;
       return frame;
     }

@@ -235,7 +235,7 @@
           <div class="row">
             <label>
               <span>Motion → loudness</span>
-              <input id="loudness" type="range" min="0" max="1" value="0.35" step="0.01" />
+              <input id="loudness" type="range" min="0" max="1" value="0.60" step="0.01" />
             </label>
             <div class="mono" id="loudnessVal">0.35</div>
           </div>
@@ -250,8 +250,8 @@
 
           <div class="row">
             <div class="small">
-              The motiongram is built by averaging frame-difference over rows, producing one “motion spectrum”
-              per frame. That column is used as magnitudes for an inverse FFT frame (with random phase),
+              The motiongram is built by averaging frame-difference over columns, producing one motion value
+              per row (full frame height). That vector is used as magnitudes for an inverse FFT frame (with random phase),
               overlap-added into audio.
             </div>
           </div>
