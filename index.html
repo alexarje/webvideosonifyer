@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Video Sonifyer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0c10;
+        --panel: #11131a;
+        --text: #e8eaf0;
+        --muted: #a7adbd;
+        --accent: #7aa2ff;
+        --border: #202433;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell,
+          Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: radial-gradient(1200px 800px at 20% 10%, #141a2a 0%, var(--bg) 55%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 24px 16px 40px;
+        display: grid;
+        gap: 16px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+        letter-spacing: 0.2px;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 380px;
+        gap: 16px;
+      }
+      @media (max-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .panel {
+        background: color-mix(in srgb, var(--panel) 86%, #000 14%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+      }
+      .row:last-child {
+        border-bottom: none;
+      }
+      label {
+        display: grid;
+        gap: 4px;
+      }
+      label span {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      input[type="range"] {
+        width: 220px;
+      }
+      input[type="number"] {
+        width: 90px;
+        background: #0c0e14;
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 8px 10px;
+      }
+      button {
+        background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 85%, #fff 15%), var(--accent));
+        color: #0b0c10;
+        border: none;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-weight: 650;
+        letter-spacing: 0.2px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #0c0e14;
+        color: var(--text);
+        border: 1px solid var(--border);
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .btns {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .canv {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: #07080c;
+        display: block;
+      }
+      .stack {
+        display: grid;
+        gap: 12px;
+      }
+      .small {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+      .status {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding-top: 8px;
+      }
+      .pill {
+        font-size: 12px;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--muted);
+        background: #0c0e14;
+      }
+      video {
+        display: none;
+      }
+      a {
+        color: color-mix(in srgb, var(--accent) 75%, #fff 25%);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Web Video Sonifyer</h1>
+        <div class="hint">
+          Webcam → frame difference → motiongram (row-average) → iFFT → audio
+        </div>
+      </header>
+
+      <div class="grid">
+        <div class="panel stack">
+          <canvas id="view" class="canv" width="960" height="540"></canvas>
+          <canvas id="motiongram" class="canv" width="960" height="240"></canvas>
+          <div class="status">
+            <div class="pill mono" id="status">idle</div>
+            <div class="pill mono" id="audioStatus">audio: stopped</div>
+          </div>
+          <div class="small">
+            Tip: in Chrome/Edge, open this via a local server (not a <span class="mono">file://</span> URL),
+            or the camera permissions may fail.
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row">
+            <div class="btns">
+              <button id="startCam">Start camera</button>
+              <button id="stopCam" class="secondary" disabled>Stop</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="btns">
+              <button id="startAudio" disabled>Start audio</button>
+              <button id="stopAudio" class="secondary" disabled>Stop audio</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Frame diff gain</span>
+              <input id="diffGain" type="range" min="0" max="8" value="2" step="0.05" />
+            </label>
+            <div class="mono" id="diffGainVal">2.00</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Motion floor (noise gate)</span>
+              <input id="floor" type="range" min="0" max="0.2" value="0.02" step="0.001" />
+            </label>
+            <div class="mono" id="floorVal">0.020</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>FFT size (power of 2)</span>
+              <input id="fftSize" type="number" min="256" max="4096" step="256" value="1024" />
+            </label>
+            <div class="small mono">audio frame \(N\)</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Columns per second (analysis rate)</span>
+              <input id="colsPerSec" type="range" min="10" max="60" value="30" step="1" />
+            </label>
+            <div class="mono" id="colsPerSecVal">30</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Motion → loudness</span>
+              <input id="loudness" type="range" min="0" max="1" value="0.35" step="0.01" />
+            </label>
+            <div class="mono" id="loudnessVal">0.35</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Smoothing (motiongram)</span>
+              <input id="smooth" type="range" min="0" max="0.95" value="0.7" step="0.01" />
+            </label>
+            <div class="mono" id="smoothVal">0.70</div>
+          </div>
+
+          <div class="row">
+            <div class="small">
+              The motiongram is built by averaging frame-difference over rows, producing one “motion spectrum”
+              per frame. That column is used as magnitudes for an inverse FFT frame (with random phase),
+              overlap-added into audio.
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="small">
+              If you want a different mapping (e.g. average over columns, or use optical flow), tell me what
+              sound you’re aiming for and I’ll adapt it.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <video id="video" playsinline autoplay muted></video>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
+
