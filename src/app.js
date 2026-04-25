@@ -328,9 +328,17 @@ function loop(ts) {
     if (col) {
       renderMotiongram(col);
       if (synthPort) {
+        // Use a "peak-ish" motion metric so sparse motion still triggers sound.
+        // Mean-of-all-rows can be too small (most rows are static), causing over-gating.
+        let maxV = 0;
         let sum = 0;
-        for (let i = 0; i < col.length; i++) sum += col[i];
-        const level = sum / col.length;
+        for (let i = 0; i < col.length; i++) {
+          const v = col[i];
+          sum += v;
+          if (v > maxV) maxV = v;
+        }
+        const mean = sum / col.length;
+        const level = Math.max(maxV, mean * 3);
         synthPort.postMessage({
           type: "motionColumn",
           column: Array.from(col),
@@ -586,6 +594,8 @@ async function startAudio() {
         }
 
         const frame = this._colToFrame(col, level);
+        // Apply envelope post-iFFT as an extra safety against clicks.
+        for (let i = 0; i < frame.length; i++) frame[i] *= this.motionEnv;
 
         // Overlap-add: we write hop samples, but need to add tail overlaps.
         // We'll keep a small overlap buffer inside the ring by writing full hop
