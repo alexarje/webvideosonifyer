@@ -3,9 +3,13 @@ const $ = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const videoEl = /** @type {HTMLVideoElement} */ ($("video"));
 const viewCanvas = /** @type {HTMLCanvasElement} */ ($("view"));
 const motionCanvas = /** @type {HTMLCanvasElement} */ ($("motiongram"));
+const motionXCanvas = /** @type {HTMLCanvasElement} */ ($("motiongramX"));
 const viewCtx = /** @type {CanvasRenderingContext2D} */ (viewCanvas.getContext("2d", { alpha: false }));
 const motionCtx = /** @type {CanvasRenderingContext2D} */ (
   motionCanvas.getContext("2d", { alpha: false })
+);
+const motionXCtx = /** @type {CanvasRenderingContext2D} */ (
+  motionXCanvas.getContext("2d", { alpha: false })
 );
 
 const statusEl = $("status");
@@ -109,7 +113,9 @@ const procCtx = /** @type {CanvasRenderingContext2D} */ (
 /** @type {Uint8ClampedArray | null} */
 let prevRGBA = null;
 /** @type {Float32Array | null} */
-let smoothMotion = null;
+let smoothMotion = null; // per-row (Y)
+/** @type {Float32Array | null} */
+let smoothMotionX = null; // per-column (X)
 
 // Motiongram storage for rendering (scrolling image).
 let mgX = 0;
@@ -184,10 +190,13 @@ async function startCamera() {
 
   prevRGBA = null;
   smoothMotion = null;
+  smoothMotionX = null;
   mgX = 0;
 
   motionCtx.fillStyle = "#07080c";
   motionCtx.fillRect(0, 0, motionCanvas.width, motionCanvas.height);
+  motionXCtx.fillStyle = "#07080c";
+  motionXCtx.fillRect(0, 0, motionXCanvas.width, motionXCanvas.height);
 
   setToggle(toggleCamBtn, true, "Camera: On", "Camera: Off");
   toggleAudioBtn.disabled = false;
@@ -206,6 +215,7 @@ function stopCamera() {
 
   prevRGBA = null;
   smoothMotion = null;
+  smoothMotionX = null;
 
   setToggle(toggleCamBtn, false, "Camera: On", "Camera: Off");
   toggleAudioBtn.disabled = true;
@@ -234,7 +244,7 @@ function drawView() {
   viewCtx.restore();
 }
 
-function computeMotionColumn() {
+function computeMotionVectors() {
   // Draw downscaled frame.
   procCtx.save();
   if (mirrorEl.checked) {
@@ -250,20 +260,23 @@ function computeMotionColumn() {
     prevRGBA = new Uint8ClampedArray(rgba);
     // One motion value per row (full frame height).
     smoothMotion = new Float32Array(PROC_H);
+    smoothMotionX = new Float32Array(PROC_W);
     return null;
   }
 
   /** @type {Float32Array} */
-  const col = new Float32Array(PROC_H);
+  const rowVec = new Float32Array(PROC_H);
+  /** @type {Float32Array} */
+  const colVec = new Float32Array(PROC_W);
   const gain = Number(diffGainEl.value);
   const gate = Number(floorEl.value);
   const smooth = Number(smoothEl.value);
 
-  // Average abs-diff over columns for each y (captures full height).
-  // Use luma-like weights for perceptual stability.
+  // Compute abs-diff and accumulate both directions:
+  // - rowVec[y] averages across columns (full frame height)
+  // - colVec[x] averages across rows (full frame width)
   for (let y = 0; y < PROC_H; y++) {
     let i = (y * PROC_W) << 2;
-    let acc = 0;
     for (let x = 0; x < PROC_W; x++, i += 4) {
       const r = rgba[i];
       const g = rgba[i + 1];
@@ -277,27 +290,40 @@ function computeMotionColumn() {
       const db = b - pb;
       // luma-weighted abs diff, normalized to [0..1] roughly.
       const d = (Math.abs(dr) * 0.2126 + Math.abs(dg) * 0.7152 + Math.abs(db) * 0.0722) / 255;
-      acc += d;
+      rowVec[y] += d;
+      colVec[x] += d;
     }
-    col[y] = acc;
   }
 
   const invW = 1 / PROC_W;
   for (let y = 0; y < PROC_H; y++) {
-    let v = col[y] * invW * gain;
+    let v = rowVec[y] * invW * gain;
     v = v < gate ? 0 : v;
     v = clamp01(v);
-    col[y] = v;
+    rowVec[y] = v;
+  }
+
+  const invH = 1 / PROC_H;
+  for (let x = 0; x < PROC_W; x++) {
+    let v = colVec[x] * invH * gain;
+    v = v < gate ? 0 : v;
+    v = clamp01(v);
+    colVec[x] = v;
   }
 
   // Exponential smoothing in motion domain for calmer audio.
   if (!smoothMotion) smoothMotion = new Float32Array(PROC_H);
   for (let y = 0; y < PROC_H; y++) {
-    smoothMotion[y] = smoothMotion[y] * smooth + col[y] * (1 - smooth);
+    smoothMotion[y] = smoothMotion[y] * smooth + rowVec[y] * (1 - smooth);
+  }
+
+  if (!smoothMotionX) smoothMotionX = new Float32Array(PROC_W);
+  for (let x = 0; x < PROC_W; x++) {
+    smoothMotionX[x] = smoothMotionX[x] * smooth + colVec[x] * (1 - smooth);
   }
 
   prevRGBA.set(rgba);
-  return smoothMotion;
+  return { row: smoothMotion, col: smoothMotionX };
 }
 
 function renderMotiongram(col) {
@@ -333,6 +359,33 @@ function renderMotiongram(col) {
   motionCtx.putImageData(img, x, 0);
 }
 
+function renderMotiongramX(col) {
+  const w = motionXCanvas.width;
+  const h = motionXCanvas.height;
+
+  motionXCtx.drawImage(motionXCanvas, -1, 0);
+  const x = w - 1;
+  const img = motionXCtx.createImageData(1, h);
+  const data = img.data;
+
+  // Visualize left->right motion distribution by mapping x-bins onto vertical pixels.
+  // (Top = left side, Bottom = right side)
+  for (let y = 0; y < h; y++) {
+    const t = y / (h - 1);
+    const bin = Math.min(col.length - 1, Math.max(0, Math.round(t * (col.length - 1))));
+    const v = col[bin];
+    const r = Math.min(255, Math.floor(40 + v * 220));
+    const g = Math.min(255, Math.floor(30 + v * 200));
+    const b = Math.min(255, Math.floor(80 + v * 255));
+    const idx = y << 2;
+    data[idx] = r;
+    data[idx + 1] = g;
+    data[idx + 2] = b;
+    data[idx + 3] = 255;
+  }
+  motionXCtx.putImageData(img, x, 0);
+}
+
 let lastColAt = 0;
 function loop(ts) {
   if (!stream) return;
@@ -344,9 +397,12 @@ function loop(ts) {
 
   if (ts - lastColAt >= minDt) {
     lastColAt = ts;
-    const col = computeMotionColumn();
-    if (col) {
+    const m = computeMotionVectors();
+    if (m) {
+      const col = m.row;
+      const colX = m.col;
       renderMotiongram(col);
+      renderMotiongramX(colX);
       if (synthPort) {
         // Use a "peak-ish" motion metric so sparse motion still triggers sound.
         // Mean-of-all-rows can be too small (most rows are static), causing over-gating.
@@ -359,10 +415,21 @@ function loop(ts) {
         }
         const mean = sum / col.length;
         const level = Math.max(maxV, mean * 3);
+
+        // Pan from horizontal motion distribution (left vs right halves).
+        let left = 0;
+        let right = 0;
+        const half = (colX.length / 2) | 0;
+        for (let i = 0; i < colX.length; i++) {
+          if (i < half) left += colX[i];
+          else right += colX[i];
+        }
+        const pan = (right - left) / (right + left + 1e-6); // [-1..1]
         synthPort.postMessage({
           type: "motionColumn",
           column: Array.from(col),
           level,
+          pan,
           loudness: Number(loudnessEl.value),
         });
       }
@@ -442,6 +509,8 @@ async function startAudio() {
       this.maxHz = 2000;
       this.silence = 0.02;
       this.motionEnv = 0;
+      this.pan = 0;
+      this.panEnv = 0;
 
       this.pendingCols = [];
       this.loudness = 0.6;
@@ -465,7 +534,7 @@ async function startAudio() {
         } else if (m.type === "motionColumn") {
           this.loudness = typeof m.loudness === "number" ? m.loudness : this.loudness;
           // Column arrives as normal Array.
-          this.pendingCols.push({ col: m.column, level: m.level || 0 });
+          this.pendingCols.push({ col: m.column, level: m.level || 0, pan: m.pan || 0 });
         }
       };
     }
@@ -599,6 +668,7 @@ async function startAudio() {
 
         const col = item.col;
         const level = item.level;
+        const panTarget = item.pan;
 
         // Envelope so silence fades smoothly (prevents clicks).
         // Release ~150ms, attack ~20ms (in hop units).
@@ -607,6 +677,11 @@ async function startAudio() {
         const targetEnv = level <= this.silence ? 0 : 1;
         const coeff = targetEnv > this.motionEnv ? attack : release;
         this.motionEnv = targetEnv + (this.motionEnv - targetEnv) * coeff;
+
+        // Smooth panning so it doesn't jump.
+        this.pan = panTarget;
+        const panCoeff = Math.exp(-this.hop / (sampleRate * 0.08));
+        this.panEnv = this.pan + (this.panEnv - this.pan) * panCoeff;
 
         // If we’re basically silent, don’t keep generating from old motion.
         if (this.motionEnv < 1e-3) {
@@ -651,7 +726,18 @@ async function startAudio() {
       const ch1 = out[1] || null;
       this._synthesizeIfNeeded();
       this._readRing(ch0);
-      if (ch1) ch1.set(ch0);
+      if (ch1) {
+        // Equal-power pan from the most recent motion message.
+        // panEnv is updated in _synthesizeIfNeeded when new motion arrives.
+        const pan = Math.max(-1, Math.min(1, this.panEnv));
+        const ang = (pan + 1) * 0.25 * Math.PI; // [-1..1] -> [0..pi/2]
+        const gL = Math.cos(ang);
+        const gR = Math.sin(ang);
+        for (let i = 0; i < ch0.length; i++) {
+          ch1[i] = ch0[i] * gR;
+          ch0[i] = ch0[i] * gL;
+        }
+      }
       return true;
     }
   }
