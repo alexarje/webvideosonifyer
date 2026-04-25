@@ -23,6 +23,10 @@ const floorVal = $("floorVal");
 const fftSizeEl = /** @type {HTMLInputElement} */ ($("fftSize"));
 const colsPerSecEl = /** @type {HTMLInputElement} */ ($("colsPerSec"));
 const colsPerSecVal = $("colsPerSecVal");
+const minHzEl = /** @type {HTMLInputElement} */ ($("minHz"));
+const minHzVal = $("minHzVal");
+const maxHzEl = /** @type {HTMLInputElement} */ ($("maxHz"));
+const maxHzVal = $("maxHzVal");
 const loudnessEl = /** @type {HTMLInputElement} */ ($("loudness"));
 const loudnessVal = $("loudnessVal");
 const smoothEl = /** @type {HTMLInputElement} */ ($("smooth"));
@@ -48,6 +52,14 @@ floorEl.addEventListener("input", () => {
 colsPerSecEl.addEventListener("input", () => {
   colsPerSecVal.textContent = String(Number(colsPerSecEl.value) | 0);
 });
+minHzEl.addEventListener("input", () => {
+  minHzVal.textContent = String(Number(minHzEl.value) | 0);
+  pushAudioConfig();
+});
+maxHzEl.addEventListener("input", () => {
+  maxHzVal.textContent = String(Number(maxHzEl.value) | 0);
+  pushAudioConfig();
+});
 loudnessEl.addEventListener("input", () => {
   loudnessVal.textContent = Number(loudnessEl.value).toFixed(2);
 });
@@ -58,6 +70,8 @@ smoothEl.addEventListener("input", () => {
 diffGainVal.textContent = Number(diffGainEl.value).toFixed(2);
 floorVal.textContent = Number(floorEl.value).toFixed(3);
 colsPerSecVal.textContent = String(Number(colsPerSecEl.value) | 0);
+minHzVal.textContent = String(Number(minHzEl.value) | 0);
+maxHzVal.textContent = String(Number(maxHzEl.value) | 0);
 loudnessVal.textContent = Number(loudnessEl.value).toFixed(2);
 smoothVal.textContent = Number(smoothEl.value).toFixed(2);
 
@@ -103,6 +117,29 @@ function validateFftSize() {
   const pow2 = nextPow2(clamped);
   fftSizeEl.value = String(pow2);
   return pow2;
+}
+
+function clampRange(minHz, maxHz) {
+  const min = Math.max(0, Math.min(minHz, maxHz - 10));
+  const max = Math.max(min + 10, maxHz);
+  return { min, max };
+}
+
+function pushAudioConfig() {
+  if (!audioCtx || !synthPort) return;
+  const fftSize = validateFftSize();
+  const cps = Number(colsPerSecEl.value) | 0;
+  const hop = Math.max(64, Math.min(fftSize >> 1, Math.round(audioCtx.sampleRate / Math.max(1, cps))));
+  const { min, max } = clampRange(Number(minHzEl.value), Number(maxHzEl.value));
+
+  // Keep UI consistent if user drags sliders past each other.
+  if (min !== Number(minHzEl.value)) minHzEl.value = String(min);
+  if (max !== Number(maxHzEl.value)) maxHzEl.value = String(max);
+  minHzVal.textContent = String(min | 0);
+  maxHzVal.textContent = String(max | 0);
+
+  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max });
+  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz)`);
 }
 
 async function startCamera() {
@@ -361,6 +398,8 @@ async function startAudio() {
       this.ring = new Float32Array(48000 * 2);
       this.ringW = 0;
       this.ringR = 0;
+      this.minHz = 80;
+      this.maxHz = 2000;
 
       this.pendingCols = [];
       this.loudness = 0.6;
@@ -378,6 +417,8 @@ async function startAudio() {
             this.hop = hop;
             this.win = null;
           }
+          if (typeof m.minHz === "number") this.minHz = Math.max(0, m.minHz);
+          if (typeof m.maxHz === "number") this.maxHz = Math.max(this.minHz + 1, m.maxHz);
         } else if (m.type === "motionColumn") {
           this.loudness = typeof m.loudness === "number" ? m.loudness : this.loudness;
           // Column arrives as normal Array.
@@ -447,8 +488,22 @@ async function startAudio() {
       im[N >> 1] = 0;
 
       // Map column samples to magnitude bins (skip 0).
+      // Only fill bins within [minHz, maxHz] to control brightness/high-frequency content.
+      const sr = sampleRate;
+      const hzPerBin = sr / N;
+      let kMin = Math.floor(this.minHz / hzPerBin);
+      let kMax = Math.ceil(this.maxHz / hzPerBin);
+      if (kMin < 1) kMin = 1;
+      const nyq = (N >> 1) - 1;
+      if (kMax > nyq) kMax = nyq;
+      if (kMax < kMin) {
+        kMin = 1;
+        kMax = Math.min(nyq, 64);
+      }
+
       for (let k = 1; k < (N >> 1); k++) {
-        const t = k / (N >> 1);
+        if (k < kMin || k > kMax) continue;
+        const t = (k - kMin) / Math.max(1, (kMax - kMin));
         const idx = Math.min(colLen - 1, Math.max(0, Math.round(t * (colLen - 1))));
         let mag = col[idx];
         if (mag < 0) mag = 0;
@@ -556,13 +611,13 @@ async function startAudio() {
 
   const cps = Number(colsPerSecEl.value) | 0;
   const hop = Math.max(64, Math.min(fftSize >> 1, Math.round(audioCtx.sampleRate / Math.max(1, cps))));
-
-  synthPort.postMessage({ type: "config", fftSize, hop });
+  const { min, max } = clampRange(Number(minHzEl.value), Number(maxHzEl.value));
+  synthPort.postMessage({ type: "config", fftSize, hop, minHz: min, maxHz: max });
 
   startAudioBtn.disabled = true;
   stopAudioBtn.disabled = false;
 
-  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop})`);
+  setAudioStatus(`audio: running (N=${fftSize}, hop=${hop}, ${min}-${max}Hz)`);
 }
 
 async function stopAudio() {

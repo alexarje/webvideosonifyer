@@ -234,6 +234,22 @@
 
           <div class="row">
             <label>
+              <span>Min frequency (Hz)</span>
+              <input id="minHz" type="range" min="0" max="4000" value="80" step="10" />
+            </label>
+            <div class="mono" id="minHzVal">80</div>
+          </div>
+
+          <div class="row">
+            <label>
+              <span>Max frequency (Hz)</span>
+              <input id="maxHz" type="range" min="100" max="12000" value="2000" step="50" />
+            </label>
+            <div class="mono" id="maxHzVal">2000</div>
+          </div>
+
+          <div class="row">
+            <label>
               <span>Motion → loudness</span>
               <input id="loudness" type="range" min="0" max="1" value="0.60" step="0.01" />
             </label>
